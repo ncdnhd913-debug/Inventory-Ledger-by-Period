@@ -1,25 +1,20 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import io
 
 # 페이지 설정
-st.set_page_config(page_title="기간별 수불 분석 시스템", layout="wide")
+st.set_page_config(page_title="월간 수불 현황 분석", layout="wide")
 
-st.title("📦 Periodic Inventory Ledger Analysis")
-st.markdown("ERP에서 다운로드한 수불부 데이터를 업로드하여 품목군 및 기간별 현황을 확인하세요.")
+st.title("📂 Monthly Inventory Movement Analysis")
 
-# 1. 데이터 전처리 함수
-def load_and_clean_data(file, year, month):
+# 1. 데이터 전처리 및 정제 함수
+def process_inventory_data(file):
     try:
-        # 데이터 읽기 (CSV/Excel 모두 대응 가능하도록 처리)
-        if file.name.endswith('.csv'):
-            df_raw = pd.read_csv(file, header=None)
-        else:
-            df_raw = pd.read_excel(file, header=None)
+        # 데이터 로드 (첫 2행을 헤더 처리를 위해 읽음)
+        df_raw = pd.read_csv(file, header=None)
         
-        # 헤더 생성 (0행의 대분류와 1행의 소분류 결합)
-        header_main = df_raw.iloc[0].ffill() # nan 값을 앞의 값으로 채움
+        # 헤더 결합 (0행: 대분류, 1행: 수량/금액)
+        header_main = df_raw.iloc[0].ffill()
         header_sub = df_raw.iloc[1].fillna('')
         
         new_cols = []
@@ -27,89 +22,95 @@ def load_and_clean_data(file, year, month):
             col_name = f"{m}_{s}".strip("_") if s != '' else str(m)
             new_cols.append(col_name)
         
-        # 데이터프레임 재구성
+        # 데이터 본체 추출 및 컬럼 지정
         df = df_raw.iloc[2:].copy()
         df.columns = new_cols
         
-        # 수치형 데이터 변환 (콤마 제거 등)
-        cols_to_fix = [c for c in df.columns if '수량' in c or '금액' in c]
-        for col in cols_to_fix:
+        # [정제 규칙 1] 품목계정그룹이 없는 행 제외
+        df = df[df['품목계정그룹'].notna() & (df['품목계정그룹'] != '')]
+        
+        # [정제 규칙 2] '제품(OEM)'을 '제품'으로 변경
+        df['품목계정그룹'] = df['품목계정그룹'].replace('제품(OEM)', '제품')
+        
+        # 숫자 데이터 변환 (콤마 제거 및 수치화)
+        numeric_cols = [c for c in df.columns if '수량' in c or '금액' in c]
+        for col in numeric_cols:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
             
-        df['년도'] = year
-        df['월'] = month
         return df
     except Exception as e:
-        st.error(f"파일 처리 오류 ({file.name}): {e}")
+        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
         return None
 
-# 2. 사이드바 - 파일 업로드
+# 2. 사이드바: 분석 월 세팅 및 업로드 안내
 with st.sidebar:
-    st.header("📂 데이터 소스")
-    uploaded_files = st.file_uploader("수불부 파일을 업로드하세요", accept_multiple_files=True, type=['csv', 'xlsx'])
+    st.header("📅 분석 기간 설정")
+    selected_month = st.selectbox(
+        "분석하고자 하는 월을 선택하세요",
+        [f"{i}월" for i in range(1, 13)],
+        index=0
+    )
     
-    all_data = []
-    if uploaded_files:
-        for file in uploaded_files:
-            with st.expander(f"설정: {file.name}"):
-                y = st.selectbox("년도", [2024, 2025, 2026], index=1, key=f"y_{file.name}")
-                m = st.selectbox("월", list(range(1, 13)), index=0, key=f"m_{file.name}")
-                processed_df = load_and_clean_data(file, y, m)
-                if processed_df is not None:
-                    all_data.append(processed_df)
-
-# 3. 데이터 분석 및 시각화
-if all_data:
-    df_combined = pd.concat(all_data, ignore_index=True)
+    st.info(f"💡 **안내:** 현재 화면은 **{selected_month}** 현황을 분석합니다. \nERP에서 추출한 **{selected_month} 수불 데이터**를 아래에 업로드해주세요.")
     
-    # 상단 필터
-    st.divider()
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        selected_groups = st.multiselect("품목계정그룹", options=df_combined['품목계정그룹'].unique(), default=df_combined['품목계정그룹'].unique())
-    with c2:
-        selected_years = st.multiselect("조회 년도", options=sorted(df_combined['년도'].unique()), default=df_combined['년도'].unique())
-    with c3:
-        selected_months = st.multiselect("조회 월", options=sorted(df_combined['월'].unique()), default=df_combined['월'].unique())
+    uploaded_file = st.file_uploader(f"{selected_month} 수불부 파일 업로드 (CSV)", type=['csv'])
 
-    # 필터 적용
-    mask = (df_combined['품목계정그룹'].isin(selected_groups)) & \
-           (df_combined['년도'].isin(selected_years)) & \
-           (df_combined['월'].isin(selected_months))
-    df_final = df_combined[mask]
-
-    # 주요 지표 (KPI)
-    st.subheader("📌 요약 지표")
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("기초재고 총액", f"{df_final['기초재고_금액'].sum():,.0f}")
-    k2.metric("총 입고금액", f"{df_final['입고계_금액'].sum():,.0f}")
-    k3.metric("총 출고금액", f"{df_final['출고계_금액'].sum():,.0f}")
-    k4.metric("기말재고 총액", f"{df_final['기말재고_금액'].sum():,.0f}")
-
-    # 차트 분석
-    tab1, tab2 = st.tabs(["📊 시각화 분석", "📄 상세 데이터"])
+# 3. 메인 화면: 데이터 분석 및 그룹별 버튼
+if uploaded_file:
+    df_processed = process_inventory_data(uploaded_file)
     
-    with tab1:
-        # 그룹별 기말재고 비중
-        fig_group = px.pie(df_final, values='기말재고_금액', names='품목계정그룹', title='품목계정그룹별 기말재고 비중')
-        st.plotly_chart(fig_group, use_container_width=True)
+    if df_processed is not None:
+        st.success(f"{selected_month} 데이터 로드 완료")
         
-        # 월별 입출고 추이
-        df_monthly = df_final.groupby(['년도', '월'])[['입고계_금액', '출고계_금액']].sum().reset_index()
-        df_monthly['Date'] = df_monthly['년도'].astype(str) + "-" + df_monthly['월'].astype(str).str.zfill(2)
-        fig_trend = px.line(df_monthly, x='Date', y=['입고계_금액', '출고계_금액'], title='월별 입출고 추이 (금액 기준)', markers=True)
-        st.plotly_chart(fig_trend, use_container_width=True)
-
-    with tab2:
-        # 원하는 컬럼만 선택하여 노출
-        display_cols = ['년도', '월', '품목계정그룹', '품목코드', '품목명', '기초재고_수량', '입고계_수량', '출고계_수량', '기말재고_수량']
-        st.dataframe(df_final[display_cols], use_container_width=True)
+        # 요약 정보 (전체 금액)
+        st.subheader(f"📌 {selected_month} 전체 수불 요약")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("기초금액 합계", f"{df_processed['기초재고_금액'].sum():,.0f}")
+        k2.metric("입고금액 합계", f"{df_processed['입고계_금액'].sum():,.0f}")
+        k3.metric("출고금액 합계", f"{df_processed['출고계_금액'].sum():,.0f}")
+        k4.metric("기말금액 합계", f"{df_processed['기말재고_금액'].sum():,.0f}")
         
-        # 엑셀 다운로드 기능
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_final.to_excel(writer, index=False, sheet_name='수불부_분석')
-        st.download_button(label="📥 분석 결과 엑셀 다운로드", data=output.getvalue(), file_name="inventory_analysis.xlsx")
+        st.divider()
+        
+        # [요구사항] 품목계정그룹별 조회 버튼
+        st.subheader("📋 품목계정그룹별 세부 현황")
+        groups = ['제품', '상품', '반제품', '원재료', '부재료']
+        
+        # 버튼을 가로로 배치
+        cols = st.columns(len(groups))
+        selected_group = None
+        
+        # 세션 상태를 이용해 선택된 그룹 유지
+        if 'current_group' not in st.session_state:
+            st.session_state.current_group = '제품'
+
+        for i, group in enumerate(groups):
+            if cols[i].button(group, use_container_width=True):
+                st.session_state.current_group = group
+        
+        # 선택된 그룹에 따른 데이터 필터링 및 출력
+        target_group = st.session_state.current_group
+        st.markdown(f"### 🔍 {target_group} 현황")
+        
+        group_df = df_processed[df_processed['품목계정그룹'] == target_group]
+        
+        if not group_df.empty:
+            # 주요 수불 컬럼만 선별하여 출력
+            display_cols = ['공장', '품목코드', '품목명', '단위', '기초재고_수량', '기초재고_금액', 
+                            '입고계_수량', '입고계_금액', '출고계_수량', '출고계_금액', '기말재고_수량', '기말재고_금액']
+            st.dataframe(group_df[display_cols], use_container_width=True, hide_index=True)
+            
+            # 엑셀 다운로드 버튼
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                group_df.to_excel(writer, index=False, sheet_name=target_group)
+            st.download_button(
+                label=f"📥 {target_group} 내역 다운로드",
+                data=output.getvalue(),
+                file_name=f"{selected_month}_{target_group}_수불현황.xlsx"
+            )
+        else:
+            st.warning(f"데이터 내에 '{target_group}' 그룹에 해당하는 항목이 없습니다.")
 
 else:
-    st.info("사이드바에서 ERP 엑셀 또는 CSV 파일을 업로드해주세요.")
+    st.warning("왼쪽 사이드바에서 분석할 월을 선택하고 해당 월의 ERP 파일을 업로드하세요.")
