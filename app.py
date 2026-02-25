@@ -3,14 +3,14 @@ import pandas as pd
 import io
 
 # 페이지 설정
-st.set_page_config(page_title="재무 비교 수불 분석 시스템", layout="wide")
+st.set_page_config(page_title="재무 누적 수불 분석 시스템", layout="wide")
 
-st.title("📊 Financial Inventory Comparison Analysis")
+st.title("⚖️ Financial Inventory Analysis (YTD Basis)")
 st.markdown("""
-이 시스템은 **당월**, **전년 동월**, **전기말** 데이터를 비교하여 재고 자산의 변동을 분석합니다.
+이 시스템은 **누적(YTD) 수불부**를 기반으로 재무상태표(잔액)와 손익계산서(누적 흐름)를 입체적으로 분석합니다.
 """)
 
-# 1. 데이터 전처리 함수 (기존 로직 유지 + 필수 컬럼 선별)
+# 1. 데이터 전처리 함수 (상세 수불 항목 17개 반영 및 정제)
 def process_inventory_data(file):
     if file is None: return None
     try:
@@ -46,86 +46,88 @@ def process_inventory_data(file):
         st.error(f"파일 처리 오류: {e}")
         return None
 
-# 2. 사이드바: 3단계 파일 업로드
+# 2. 사이드바: 3단계 누적 파일 업로드
 with st.sidebar:
-    st.header("📅 분석 기간 설정")
-    target_year = st.number_input("기준 년도", value=2024)
-    target_month = st.selectbox("기준 월", [f"{i}월" for i in range(1, 13)], index=4) # 기본 5월
+    st.header("📅 분석 기준 설정")
+    target_year = st.number_input("당기 기준 년도", value=2026)
+    target_month = st.selectbox("기준 월", [f"{i}월" for i in range(1, 13)], index=1) # 2월 기본
     
     st.divider()
-    st.subheader("📁 파일 업로드 안내")
+    st.subheader("📁 누적 수불 자료 업로드")
     
-    # 1. 당월
-    file_curr = st.file_uploader(f"1. 당월 ({target_year}년 {target_month}) 파일", type=['csv', 'xlsx'])
-    # 2. 전년 동월
-    file_prev_month = st.file_uploader(f"2. 전년 동월 ({target_year-1}년 {target_month}) 파일", type=['csv', 'xlsx'])
-    # 3. 전기말
-    file_prev_year = st.file_uploader(f"3. 전기말 ({target_year-1}년 12월) 파일", type=['csv', 'xlsx'])
+    # 1. 당기 누적 (1월 ~ 기준월)
+    file_curr_ytd = st.file_uploader(f"1. 당기 누적 (01월~{target_month})", type=['csv', 'xlsx'])
+    # 2. 전기 전체 (전년 01월 ~ 12월)
+    file_prev_full = st.file_uploader(f"2. 전기 전체 (전년 01월~12월)", type=['csv', 'xlsx'])
+    # 3. 전년 동기 누적 (전년 01월 ~ 전년 기준월)
+    file_prev_ytd = st.file_uploader(f"3. 전년 동기 누적 (전년 01월~{target_month})", type=['csv', 'xlsx'])
+
+    st.caption("※ 모든 파일은 해당 기간의 '누적 수불부'여야 정확한 분석이 가능합니다.")
 
 # 3. 메인 로직
-if file_curr and file_prev_month and file_prev_year:
-    df_curr = process_inventory_data(file_curr)
-    df_prev_m = process_inventory_data(file_prev_month)
-    df_prev_y = process_inventory_data(file_prev_year)
+if file_curr_ytd and file_prev_full and file_prev_ytd:
+    df_curr = process_inventory_data(file_curr_ytd)
+    df_prev_full = process_inventory_data(file_prev_full)
+    df_prev_ytd = process_inventory_data(file_prev_ytd)
 
-    if df_curr is not None and df_prev_m is not None and df_prev_y is not None:
+    if all(v is not None for v in [df_curr, df_prev_full, df_prev_ytd]):
         
         # 품목계정그룹별 조회 버튼
-        st.subheader("📋 품목계정그룹별 비교 분석")
+        st.subheader("📋 품목계정그룹별 재무 분석")
         groups = ['제품', '상품', '반제품', '원재료', '부재료']
-        cols = st.columns(len(groups))
+        btn_cols = st.columns(len(groups))
         
         if 'current_group' not in st.session_state:
             st.session_state.current_group = '제품'
         for i, group in enumerate(groups):
-            if cols[i].button(group, use_container_width=True):
+            if btn_cols[i].button(group, use_container_width=True):
                 st.session_state.current_group = group
         
         target_group = st.session_state.current_group
         
-        # 데이터 병합 (품목코드 기준)
-        # 당월 기준 데이터 준비
-        base_df = df_curr[df_curr['품목계정그룹'] == target_group][['품목코드', '품목명', '단위', '기말재고_금액', '판매출고_금액', '입고계_금액']]
-        base_df.columns = ['품목코드', '품목명', '단위', '당월_기말금액', '당월_판매금액', '당월_입고금액']
+        # --- 데이터 병합 및 비교 계산 ---
+        # A. 당기 누적 기준 (BS 기말잔액 + PL 당기 실적)
+        base_df = df_curr[df_curr['품목계정그룹'] == target_group][['품목코드', '품목명', '단위', '기말재고_금액', '판매출고_금액', '입고계_금액', '생산입고_금액']]
+        base_df.columns = ['품목코드', '품목명', '단위', '당기말_재고', '당기_누적판매', '당기_누적입고', '당기_누적생산']
         
-        # 전년 동월 데이터 병합 (손익 비교용)
-        prev_m_sub = df_prev_m[['품목코드', '판매출고_금액', '입고계_금액']]
-        prev_m_sub.columns = ['품목코드', '전년동월_판매금액', '전년동월_입고금액']
+        # B. 전기말 잔액 (BS 비교용: 전기말 12월 기말재고)
+        prev_full_sub = df_prev_full[['품목코드', '기말재고_금액']]
+        prev_full_sub.columns = ['품목코드', '전기말_재고']
         
-        # 전기말 데이터 병합 (재무상태 비교용)
-        prev_y_sub = df_prev_y[['품목코드', '기말재고_금액']]
-        prev_y_sub.columns = ['품목코드', '전기말_재고금액']
+        # C. 전년 동기 실적 (PL 비교용: 작년 같은 기간 누적 판매/입고)
+        prev_ytd_sub = df_prev_ytd[['품목코드', '판매출고_금액', '입고계_금액']]
+        prev_ytd_sub.columns = ['품목코드', '전년동기_누적판매', '전년동기_누적입고']
         
-        # 최종 비교 테이블 구성
-        comp_df = pd.merge(base_df, prev_m_sub, on='품목코드', how='left')
-        comp_df = pd.merge(comp_df, prev_y_sub, on='품목코드', how='left').fillna(0)
+        # 최종 병합
+        comp_df = pd.merge(base_df, prev_full_sub, on='품목코드', how='left')
+        comp_df = pd.merge(comp_df, prev_ytd_sub, on='품목코드', how='left').fillna(0)
         
-        # 계산 컬럼 생성
-        # 1. 전기말 대비 재고 증감 (BS 관점)
-        comp_df['전기말대비_증감액'] = comp_df['당월_기말금액'] - comp_df['전기말_재고금액']
+        # --- 계산 컬럼 ---
+        # 1. 재무상태표(BS) 관점: 전기말 대비 재고 증감
+        comp_df['BS_재고증감액'] = comp_df['당기말_재고'] - comp_df['전기말_재고']
         
-        # 2. 전년동월 대비 판매(출고) 증감 (PL 관점)
-        comp_df['전년동월대비_판매증감'] = comp_df['당월_판매금액'] - comp_df['전년동월_판매금액']
+        # 2. 손익계산서(PL) 관점: 전년 동기 대비 누적 판매 실적 증감
+        comp_df['PL_판매실적증감'] = comp_df['당기_누적판매'] - comp_df['전년동기_누적판매']
 
-        # UI 출력
-        st.markdown(f"### 🔍 {target_group} 재무 비교 내역")
+        # --- 대시보드 출력 ---
+        st.markdown(f"### 🔍 {target_group} 재무 비교 (YTD)")
         
         # 요약 지표 카드
         m1, m2, m3 = st.columns(3)
-        m1.metric("당월 기말재고 총액", f"{comp_df['당월_기말금액'].sum():,.0f}", 
-                  delta=f"{comp_df['전기말대비_증감액'].sum():,.0f} (vs 전기말)")
-        m2.metric("당월 판매(출고) 총액", f"{comp_df['당월_판매금액'].sum():,.0f}", 
-                  delta=f"{comp_df['전년동월대비_판매증감'].sum():,.0f} (vs 전년동월)")
-        m3.metric("전기말 재고 총액", f"{comp_df['전기말_재고금액'].sum():,.0f}")
+        m1.metric("당기말 재고총액", f"{comp_df['당기말_재고'].sum():,.0f}", 
+                  delta=f"{comp_df['BS_재고증감액'].sum():,.0f} (vs 전기말)")
+        m2.metric("당기 누적 판매액", f"{comp_df['당기_누적판매'].sum():,.0f}", 
+                  delta=f"{comp_df['PL_판매실적증감'].sum():,.0f} (vs 전년동기)")
+        m3.metric("전기말 재고총액", f"{comp_df['전기말_재고'].sum():,.0f}")
 
-        # 상세 비교 표
+        # 상세 테이블 (가독성을 위해 정렬 및 선택)
         st.dataframe(comp_df, use_container_width=True, hide_index=True)
         
         # 엑셀 다운로드
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            comp_df.to_excel(writer, index=False, sheet_name='재무비교분석')
-        st.download_button(label="📥 비교 분석 결과 다운로드", data=output.getvalue(), file_name=f"Financial_Comparison_{target_group}.xlsx")
+            comp_df.to_excel(writer, index=False, sheet_name='YTD_Financial_Analysis')
+        st.download_button(label="📥 YTD 분석 결과 다운로드", data=output.getvalue(), file_name=f"YTD_Analysis_{target_group}.xlsx")
 
 else:
-    st.info("💡 분석을 시작하려면 사이드바에 **당월**, **전년 동월**, **전기말** 3개의 파일을 모두 업로드해주세요.")
+    st.warning("💡 **당기 누적**, **전기 전체(12월)**, **전년 동기 누적** 3개 파일을 업로드해 주세요.")
