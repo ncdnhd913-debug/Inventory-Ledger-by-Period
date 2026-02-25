@@ -10,8 +10,12 @@ st.title("📂 Monthly Inventory Movement Analysis")
 # 1. 데이터 전처리 및 정제 함수
 def process_inventory_data(file):
     try:
-        # 데이터 로드 (첫 2행을 헤더 처리를 위해 읽음)
-        df_raw = pd.read_csv(file, header=None)
+        # 파일 확장자에 따라 읽기 방식 결정
+        if file.name.endswith('.csv'):
+            df_raw = pd.read_csv(file, header=None)
+        else:
+            # 엑셀 파일(.xlsx, .xls) 처리
+            df_raw = pd.read_excel(file, header=None)
         
         # 헤더 결합 (0행: 대분류, 1행: 수량/금액)
         header_main = df_raw.iloc[0].ffill()
@@ -27,7 +31,9 @@ def process_inventory_data(file):
         df.columns = new_cols
         
         # [정제 규칙 1] 품목계정그룹이 없는 행 제외
-        df = df[df['품목계정그룹'].notna() & (df['품목계정그룹'] != '')]
+        # 텍스트 형태의 'nan'이나 실제 결측치 모두 제거
+        df = df[df['품목계정그룹'].notna()]
+        df = df[df['품목계정그룹'].astype(str).str.strip() != '']
         
         # [정제 규칙 2] '제품(OEM)'을 '제품'으로 변경
         df['품목계정그룹'] = df['품목계정그룹'].replace('제품(OEM)', '제품')
@@ -35,7 +41,11 @@ def process_inventory_data(file):
         # 숫자 데이터 변환 (콤마 제거 및 수치화)
         numeric_cols = [c for c in df.columns if '수량' in c or '금액' in c]
         for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+            # 엑셀은 이미 숫자인 경우가 많으므로 처리 추가
+            if df[col].dtype == object:
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+            else:
+                df[col] = df[col].fillna(0)
             
         return df
     except Exception as e:
@@ -51,9 +61,10 @@ with st.sidebar:
         index=0
     )
     
-    st.info(f"💡 **안내:** 현재 화면은 **{selected_month}** 현황을 분석합니다. \nERP에서 추출한 **{selected_month} 수불 데이터**를 아래에 업로드해주세요.")
+    st.info(f"💡 **안내:** 현재 화면은 **{selected_month}** 현황을 분석합니다. \nERP에서 추출한 **{selected_month} 엑셀 또는 CSV 데이터**를 업로드해주세요.")
     
-    uploaded_file = st.file_uploader(f"{selected_month} 수불부 파일 업로드 (CSV)", type=['csv'])
+    # [수정포인트] type에 xlsx와 xls를 추가하여 모든 엑셀 형식 허용
+    uploaded_file = st.file_uploader(f"{selected_month} 수불부 파일 업로드", type=['csv', 'xlsx', 'xls'])
 
 # 3. 메인 화면: 데이터 분석 및 그룹별 버튼
 if uploaded_file:
@@ -65,22 +76,20 @@ if uploaded_file:
         # 요약 정보 (전체 금액)
         st.subheader(f"📌 {selected_month} 전체 수불 요약")
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("기초금액 합계", f"{df_processed['기초재고_금액'].sum():,.0f}")
-        k2.metric("입고금액 합계", f"{df_processed['입고계_금액'].sum():,.0f}")
-        k3.metric("출고금액 합계", f"{df_processed['출고계_금액'].sum():,.0f}")
-        k4.metric("기말금액 합계", f"{df_processed['기말재고_금액'].sum():,.0f}")
+        k1.metric("기초금액 합계", f"{df_processed.get('기초재고_금액', pd.Series([0])).sum():,.0f}")
+        k2.metric("입고금액 합계", f"{df_processed.get('입고계_금액', pd.Series([0])).sum():,.0f}")
+        k3.metric("출고금액 합계", f"{df_processed.get('출고계_금액', pd.Series([0])).sum():,.0f}")
+        k4.metric("기말금액 합계", f"{df_processed.get('기말재고_금액', pd.Series([0])).sum():,.0f}")
         
         st.divider()
         
-        # [요구사항] 품목계정그룹별 조회 버튼
+        # 품목계정그룹별 조회 버튼
         st.subheader("📋 품목계정그룹별 세부 현황")
         groups = ['제품', '상품', '반제품', '원재료', '부재료']
         
         # 버튼을 가로로 배치
         cols = st.columns(len(groups))
-        selected_group = None
         
-        # 세션 상태를 이용해 선택된 그룹 유지
         if 'current_group' not in st.session_state:
             st.session_state.current_group = '제품'
 
@@ -88,19 +97,23 @@ if uploaded_file:
             if cols[i].button(group, use_container_width=True):
                 st.session_state.current_group = group
         
-        # 선택된 그룹에 따른 데이터 필터링 및 출력
         target_group = st.session_state.current_group
         st.markdown(f"### 🔍 {target_group} 현황")
         
-        group_df = df_processed[df_processed['품목계정그룹'] == target_group]
+        # 필터링 (공백 제거 후 비교)
+        group_df = df_processed[df_processed['품목계정그룹'].astype(str).str.strip() == target_group]
         
         if not group_df.empty:
             # 주요 수불 컬럼만 선별하여 출력
-            display_cols = ['공장', '품목코드', '품목명', '단위', '기초재고_수량', '기초재고_금액', 
-                            '입고계_수량', '입고계_금액', '출고계_수량', '출고계_금액', '기말재고_수량', '기말재고_금액']
+            base_display_cols = ['공장', '품목코드', '품목명', '단위']
+            qty_amt_cols = ['기초재고_수량', '기초재고_금액', '입고계_수량', '입고계_금액', '출고계_수량', '출고계_금액', '기말재고_수량', '기말재고_금액']
+            
+            # 실제 데이터에 존재하는 컬럼만 선택
+            display_cols = [c for c in base_display_cols + qty_amt_cols if c in group_df.columns]
+            
             st.dataframe(group_df[display_cols], use_container_width=True, hide_index=True)
             
-            # 엑셀 다운로드 버튼
+            # 엑셀 다운로드 기능
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 group_df.to_excel(writer, index=False, sheet_name=target_group)
