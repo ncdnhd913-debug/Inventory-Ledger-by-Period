@@ -14,6 +14,8 @@ st.markdown("""
     [data-testid="stDataFrame"] th { text-align: center !important; }
     /* 분리된 합계 표가 본문 표와 이어져 보이도록 마진 축소 */
     div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem; }
+    /* 합계표 하단 테두리 추가 */
+    div[data-testid="stDataFrame"] table { border-bottom: 1px solid #e6e9ef !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -46,20 +48,17 @@ def process_inventory_data(file):
         st.error(f"⚠️ {file.name} 처리 중 오류: {e}")
         return None
 
-# 합계 행 데이터 생성 함수 (본문과 열 순서 동일하게 반환)
+# 합계 행 분리 반환 함수
 def get_totals(df, numeric_cols, label_col='품목명'):
     if df.empty: return pd.DataFrame()
     totals = df[numeric_cols].sum()
     total_data = {col: totals[col] for col in numeric_cols}
     total_data[label_col] = '▶ 합계 (TOTAL)'
-    
-    # 원본 df에 있는 나머지 텍스트 열은 빈칸 처리
     for col in df.columns:
         if col not in total_data:
             total_data[col] = ""
-            
     total_df = pd.DataFrame([total_data])
-    return total_df[df.columns] # 열 순서 강제 일치
+    return total_df[df.columns]
 
 # 시각적 스타일링 함수
 def style_financial_df(df, diff_cols, text_cols, label_col='품목명', is_total=False):
@@ -68,18 +67,15 @@ def style_financial_df(df, diff_cols, text_cols, label_col='품목명', is_total
     num_cols = [c for c in df.columns if df[c].dtype != object and c != label_col]
     styler = df.style.format("{:,.0f}", subset=num_cols)
     
-    # 텍스트 열 중앙 정렬 / 숫자 열 우측 정렬
     existing_text = [c for c in text_cols if c in df.columns]
     if existing_text:
         styler = styler.set_properties(subset=existing_text, **{'text-align': 'center'})
     if num_cols:
         styler = styler.set_properties(subset=num_cols, **{'text-align': 'right'})
         
-    # 합계 행인 경우 배경색 없이 글씨만 굵게
     if is_total:
         styler = styler.set_properties(**{'font-weight': 'bold !important'})
                    
-    # 증감 열 양수/음수 색상 (양수: 빨강, 음수: 파랑)
     existing_diff_cols = [c for c in diff_cols if c in df.columns]
     if existing_diff_cols:
         styler = styler.map(lambda x: 'color: #D32F2F; font-weight: bold;' if isinstance(x, (int, float)) and x > 0 
@@ -87,26 +83,39 @@ def style_financial_df(df, diff_cols, text_cols, label_col='품목명', is_total
                             subset=existing_diff_cols)
     return styler
 
+# 공통 Column Config 생성기 (열 너비 강제 통일을 위해)
+def get_column_config(df_columns, text_cols):
+    config = {}
+    for col in df_columns:
+        if col in text_cols:
+            if col == '품목명':
+                config[col] = st.column_config.TextColumn(col, width="large") # 품목명은 넓게
+            elif col in ['분석그룹', '품목계정그룹']:
+                config[col] = st.column_config.TextColumn(col, width="medium")
+            else:
+                config[col] = st.column_config.TextColumn(col, width="medium")
+        else:
+             config[col] = st.column_config.NumberColumn(col, width="medium") # 숫자는 중간 너비
+    return config
+
 # 2-Step (그룹 -> 상세) 분석 렌더링 함수
 def display_analysis_tab(df, target_cols, diff_cols, text_cols, tab_id):
     temp_df = df[target_cols].copy()
     num_cols = [c for c in temp_df.columns if temp_df[c].dtype != object and c != '분석그룹']
     
-    # Step 1. 분석그룹별 요약
     st.markdown("#### 1️⃣ 품목 그룹별 차이 요약")
     st.caption("💡 '커스텀 그룹핑' 설정에 따라 묶인 그룹 단위의 원가/재고 변동입니다.")
     grp_summary = temp_df.groupby('분석그룹')[num_cols].sum().reset_index()
     if diff_cols: grp_summary = grp_summary.sort_values(diff_cols[0], ascending=False)
     
-    # 본문 표 렌더링
-    st.dataframe(style_financial_df(grp_summary, diff_cols, ['분석그룹'], label_col='분석그룹'), use_container_width=True, hide_index=True)
-    # 합계 표 렌더링 (본문 아래 부착, 헤더 숨김 처리)
+    col_config_grp = get_column_config(grp_summary.columns, text_cols + ['분석그룹'])
+    
+    st.dataframe(style_financial_df(grp_summary, diff_cols, ['분석그룹'], label_col='분석그룹'), use_container_width=True, hide_index=True, column_config=col_config_grp)
     grp_total = get_totals(grp_summary, num_cols, label_col='분석그룹')
-    st.dataframe(style_financial_df(grp_total, diff_cols, ['분석그룹'], label_col='분석그룹', is_total=True), use_container_width=True, hide_index=True)
+    st.dataframe(style_financial_df(grp_total, diff_cols, ['분석그룹'], label_col='분석그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_config_grp)
     
     st.divider()
     
-    # Step 2. 상세 드릴다운
     st.markdown("#### 2️⃣ 그룹 하위 세부 품목 조회 (Drill-Down)")
     selected_grp = st.selectbox("📌 세부 내역을 확인할 품목 그룹을 선택하세요:", options=["전체 품목 보기"] + list(grp_summary['분석그룹'].unique()), key=tab_id)
     
@@ -117,11 +126,11 @@ def display_analysis_tab(df, target_cols, diff_cols, text_cols, tab_id):
         
     if diff_cols: detail_df = detail_df.sort_values(diff_cols[0], ascending=False)
         
-    # 본문 표 렌더링
-    st.dataframe(style_financial_df(detail_df, diff_cols, text_cols, label_col='품목명'), use_container_width=True, hide_index=True)
-    # 합계 표 렌더링
+    col_config_dtl = get_column_config(detail_df.columns, text_cols)
+        
+    st.dataframe(style_financial_df(detail_df, diff_cols, text_cols, label_col='품목명'), use_container_width=True, hide_index=True, column_config=col_config_dtl)
     detail_total = get_totals(detail_df, num_cols, label_col='품목명')
-    st.dataframe(style_financial_df(detail_total, diff_cols, text_cols, label_col='품목명', is_total=True), use_container_width=True, hide_index=True)
+    st.dataframe(style_financial_df(detail_total, diff_cols, text_cols, label_col='품목명', is_total=True), use_container_width=True, hide_index=True, column_config=col_config_dtl)
 
 # 2. 사이드바 설정
 with st.sidebar:
@@ -147,13 +156,9 @@ if all(f is not None for f in files):
     d_curr_m, d_prev_m, d_curr_ytd, d_prev_ytd, d_prev_full = dfs
 
     if all(d is not None for d in dfs):
-        # 품목 마스터 취합
         all_items = pd.concat([d[['품목코드', '품목명', '단위', '품목계정그룹']] for d in dfs]).drop_duplicates('품목코드')
-        
-        # [커스텀 로직] 기본 분석그룹 = 품목명 첫단어(하이픈 기준)
         all_items['분석그룹'] = all_items['품목명'].apply(lambda x: str(x).split('-')[0].strip())
         
-        # 엑셀 매핑 적용
         if f_mapping is not None:
             try:
                 mapping_df = pd.read_csv(f_mapping) if f_mapping.name.endswith('.csv') else pd.read_excel(f_mapping)
@@ -164,7 +169,6 @@ if all(f is not None for f in files):
             except Exception as e:
                 st.sidebar.error(f"매핑 파일 오류: {e}")
 
-        # 커스텀 에디터 UI
         with st.expander("🛠️ 품목 커스텀 그룹핑 설정 (직접 수정 가능)", expanded=False):
             st.info("아래 표의 **'분석그룹'** 열을 더블클릭하여 그룹명을 원하는 대로 수정할 수 있습니다. 수정한 내용을 다운로드해 사이드바에 업로드하면 다음 달에도 자동 반영됩니다.")
             col1, col2 = st.columns([8, 2])
@@ -181,7 +185,6 @@ if all(f is not None for f in files):
                     all_items[['품목계정그룹', '품목코드', '품목명', '분석그룹']].to_excel(writer, index=False)
                 st.download_button("📥 매핑 파일 저장(다운로드)", data=out_map.getvalue(), file_name="Item_Mapping.xlsx")
 
-        # 데이터 병합
         comp_all = all_items.merge(d_curr_m[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'당월_생산출고', '판매출고_금액':'당월_판매출고', '기말재고_금액':'당월말_재고'})
         comp_all = comp_all.merge(d_prev_m[['품목코드', '생산출고_금액', '판매출고_금액']], on='품목코드', how='left')\
@@ -193,7 +196,6 @@ if all(f is not None for f in files):
         comp_all = comp_all.merge(d_prev_full[['품목코드', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'기말재고_금액':'전기말_재고'}).fillna(0)
 
-        # 차이 계산
         comp_all['재고_증감'] = comp_all['당월말_재고'] - comp_all['전기말_재고']
         comp_all['판매_YoY증감'] = comp_all['당기누적_판매출고'] - comp_all['전기동기_판매출고']
         comp_all['판매_MoM증감'] = comp_all['당월_판매출고'] - comp_all['전월_판매출고']
@@ -220,7 +222,6 @@ if all(f is not None for f in files):
             
             tabs = st.tabs(tab_names)
             
-            # 1) 기말재고 차이분석
             with tabs[0]:
                 view1 = group_df[(group_df['전기말_재고'] != 0) | (group_df['당월말_재고'] != 0)].copy()
                 if not view1.empty:
@@ -228,7 +229,6 @@ if all(f is not None for f in files):
                     display_analysis_tab(view1, view1.columns.tolist(), ['재고_증감'], text_cols, "tab_inv")
                 else: st.info("재고 변동 내역이 없습니다.")
 
-            # 2) 매출원가 차이분석
             if target_group != '반제품':
                 with tabs[1]:
                     view2 = group_df[(group_df['당기누적_판매출고'] != 0) | (group_df['전기동기_판매출고'] != 0) | (group_df['당월_판매출고'] != 0)].copy()
@@ -237,7 +237,6 @@ if all(f is not None for f in files):
                         view2.columns = ['분석그룹', '품목코드', '품목명', '당기누적_매출원가', '전기누적_매출원가', '전기대비 차이증감', '당월_매출원가', '전월_매출원가', '전월대비 차이증감']
                         display_analysis_tab(view2, view2.columns.tolist(), ['전기대비 차이증감', '전월대비 차이증감'], text_cols, "tab_cogs")
 
-            # 3) 재료비 차이분석
             if target_group in ['원재료', '부재료']:
                 with tabs[len(tab_names)-1]:
                     cost_label = "원재료비" if target_group == '원재료' else "부재료비"
@@ -249,7 +248,6 @@ if all(f is not None for f in files):
         else:
             st.warning(f"'{target_group}' 계정에 유효한 데이터가 없습니다.")
 
-        # --- 총괄 요약 보고서 ---
         st.divider()
         st.subheader("📑 계정별 총괄 요약 보고서 (Summary Report)")
         
@@ -268,25 +266,28 @@ if all(f is not None for f in files):
 
         with summary_tabs[0]:
             sum_view1 = summary_agg[['품목계정그룹', '전기말_재고', '당월말_재고', '재고_증감']]
-            st.dataframe(style_financial_df(sum_view1, ['재고_증감'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True)
+            col_cfg_sum1 = get_column_config(sum_view1.columns, text_cols)
+            st.dataframe(style_financial_df(sum_view1, ['재고_증감'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True, column_config=col_cfg_sum1)
             sum_view1_total = get_totals(sum_view1, sum_view1.columns[1:], label_col='품목계정그룹')
-            st.dataframe(style_financial_df(sum_view1_total, ['재고_증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True)
+            st.dataframe(style_financial_df(sum_view1_total, ['재고_증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum1)
 
         with summary_tabs[1]:
             s_view2 = summary_agg[summary_agg['품목계정그룹'] != '반제품']\
                 [['품목계정그룹', '당기누적_판매출고', '전기동기_판매출고', '판매_YoY증감', '당월_판매출고', '전월_판매출고', '판매_MoM증감']]
             s_view2.columns = ['품목계정그룹', '당기누적_매출원가', '전기누적_매출원가', '전기대비 차이증감', '당월_매출원가', '전월_매출원가', '전월대비 차이증감']
-            st.dataframe(style_financial_df(s_view2, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True)
+            col_cfg_sum2 = get_column_config(s_view2.columns, text_cols)
+            st.dataframe(style_financial_df(s_view2, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True, column_config=col_cfg_sum2)
             s_view2_total = get_totals(s_view2, s_view2.columns[1:], label_col='품목계정그룹')
-            st.dataframe(style_financial_df(s_view2_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True)
+            st.dataframe(style_financial_df(s_view2_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum2)
 
         with summary_tabs[2]:
             s_view3 = summary_agg[summary_agg['품목계정그룹'].isin(['원재료', '부재료'])]\
                 [['품목계정그룹', '당기누적_생산출고', '전기동기_생산출고', '생산_YoY증감', '당월_생산출고', '전월_생산출고', '생산_MoM증감']]
             s_view3.columns = ['품목계정그룹', '당기누적_재료비', '전기누적_재료비', '전기대비 차이증감', '당월_재료비', '전월_재료비', '전월대비 차이증감']
-            st.dataframe(style_financial_df(s_view3, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True)
+            col_cfg_sum3 = get_column_config(s_view3.columns, text_cols)
+            st.dataframe(style_financial_df(s_view3, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True, column_config=col_cfg_sum3)
             s_view3_total = get_totals(s_view3, s_view3.columns[1:], label_col='품목계정그룹')
-            st.dataframe(style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True)
+            st.dataframe(style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum3)
 
         # 엑셀 다운로드
         output = io.BytesIO()
