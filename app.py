@@ -19,8 +19,9 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("⚖️ Financial Inventory Variance Analysis")
-st.markdown("회계 결산 및 재료비/매출원가 증감 분석을 위한 통합 시스템입니다.")
+# 1, 2번 수정사항 적용
+st.title("📦 Financial Inventory Variance Analysis")
+st.markdown("기말재고 및 재료비/매출원가 증감 분석을 위한 통합 시스템입니다.")
 
 # 1. 데이터 전처리 함수
 def process_inventory_data(file):
@@ -139,13 +140,17 @@ with st.sidebar:
     X = st.selectbox("기준 월(X)", options=list(range(1, 13)), index=0)
     prev_X = X - 1 if X > 1 else 12
     st.divider()
-    st.subheader("📁 1. 수불부 파일 업로드")
+    
+    # 3번 수정사항 적용
+    st.subheader("📁 1. 원가수불부(ERP10) 파일 업로드")
+    st.caption("💡 '원가수불부' 메뉴에서 다운받은 실제원가수불(EXCEL) 자료를 업로드하세요.")
     f_curr_m = st.file_uploader(f"(1) 당월 ({X}월)", type=['csv', 'xlsx'])
     f_prev_m = st.file_uploader(f"(2) 전월 ({prev_X}월)", type=['csv', 'xlsx'])
     f_curr_ytd = st.file_uploader(f"(3) 당기 누적 (1월~{X}월)", type=['csv', 'xlsx'])
     f_prev_ytd = st.file_uploader(f"(4) 전기 동기 누적 (전기 1월~{X}월)", type=['csv', 'xlsx'])
     f_prev_full = st.file_uploader(f"(5) 전기 전체 (전기 1월~12월)", type=['csv', 'xlsx'])
     st.divider()
+    
     st.subheader("⚙️ 2. 커스텀 매핑 파일 (선택)")
     f_mapping = st.file_uploader("품목 그룹핑 매핑 파일", type=['csv', 'xlsx'], help="품목코드와 분석그룹 열이 있는 파일을 올리시면 일괄 적용됩니다.")
 
@@ -295,4 +300,4 @@ if all(f is not None for f in files):
             comp_all.to_excel(writer, index=False, sheet_name='종합분석')
         st.download_button("📥 전체 분석 데이터 다운로드", data=output.getvalue(), file_name=f"Inventory_Analysis_{X}M.xlsx")
 else:
-    st.info("💡 사이드바의 1번(수불부 5개 파일) 항목을 모두 업로드해주세요.")
+    st.info("💡 사이드바의 1번(원가수불부 5개 파일) 항목을 모두 업로드해주세요.")
