@@ -5,7 +5,7 @@ import io
 # 페이지 설정
 st.set_page_config(page_title="회계 수불 증감 통합 분석", layout="wide")
 
-# CSS를 통한 UI 보강: 표 헤더 및 텍스트 중앙 정렬
+# CSS를 통한 UI 보강: 표 헤더 강제 중앙 정렬
 st.markdown("""
     <style>
     .reportview-container .main .block-container { max-width: 95%; }
@@ -143,8 +143,8 @@ if all(f is not None for f in files):
         # 품목 마스터 취합
         all_items = pd.concat([d[['품목코드', '품목명', '단위', '품목계정그룹']] for d in dfs]).drop_duplicates('품목코드')
         
-        # [커스텀 로직] 기본 분석그룹 = 품목명
-        all_items['분석그룹'] = all_items['품목명']
+        # [커스텀 로직] 기본 분석그룹 = 품목명 첫단어(하이픈 기준)
+        all_items['분석그룹'] = all_items['품목명'].apply(lambda x: str(x).split('-')[0].strip())
         
         # 엑셀 매핑 적용
         if f_mapping is not None:
@@ -153,13 +153,13 @@ if all(f is not None for f in files):
                 if '품목코드' in mapping_df.columns and '분석그룹' in mapping_df.columns:
                     mapping_df['품목코드'] = mapping_df['품목코드'].astype(str).str.strip()
                     mapping_dict = dict(zip(mapping_df['품목코드'], mapping_df['분석그룹']))
-                    all_items['분석그룹'] = all_items['품목코드'].map(mapping_dict).fillna(all_items['품목명'])
+                    all_items['분석그룹'] = all_items['품목코드'].map(mapping_dict).fillna(all_items['분석그룹'])
             except Exception as e:
                 st.sidebar.error(f"매핑 파일 오류: {e}")
 
         # 커스텀 에디터 UI
         with st.expander("🛠️ 품목 커스텀 그룹핑 설정 (직접 수정 가능)", expanded=False):
-            st.info("아래 표의 **'분석그룹'** 열을 더블클릭하여 A-1, A-2를 모두 'A'처럼 통합할 수 있습니다. 수정한 내용을 다운로드해 사이드바에 업로드하면 다음 달에도 자동 반영됩니다.")
+            st.info("아래 표의 **'분석그룹'** 열을 더블클릭하여 그룹명을 원하는 대로 수정할 수 있습니다. 수정한 내용을 다운로드해 사이드바에 업로드하면 다음 달에도 자동 반영됩니다.")
             col1, col2 = st.columns([8, 2])
             edited_items = st.data_editor(
                 all_items[['품목계정그룹', '품목코드', '품목명', '분석그룹']],
@@ -274,4 +274,17 @@ if all(f is not None for f in files):
             st.dataframe(styled_sum2, use_container_width=True, hide_index=True)
 
         with summary_tabs[2]:
-            s_view3 = summary_agg[summary_agg['품목계정그룹'].isin(['원재료', '부재료
+            s_view3 = summary_agg[summary_agg['품목계정그룹'].isin(['원재료', '부재료'])]\
+                [['품목계정그룹', '당기누적_생산출고', '전기동기_생산출고', '생산_YoY증감', '당월_생산출고', '전월_생산출고', '생산_MoM증감']]
+            s_view3.columns = ['품목계정그룹', '당기누적_재료비', '전기누적_재료비', '전기대비 차이증감', '당월_재료비', '전월_재료비', '전월대비 차이증감']
+            s_view3_total = add_total_row(s_view3, s_view3.columns[1:], label_col='품목계정그룹')
+            styled_sum3 = style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹')
+            st.dataframe(styled_sum3, use_container_width=True, hide_index=True)
+
+        # 엑셀 다운로드
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            comp_all.to_excel(writer, index=False, sheet_name='종합분석')
+        st.download_button("📥 전체 분석 데이터 다운로드", data=output.getvalue(), file_name=f"Inventory_Analysis_{X}M.xlsx")
+else:
+    st.info("💡 사이드바의 1번(수불부 5개 파일) 항목을 모두 업로드해주세요.")
