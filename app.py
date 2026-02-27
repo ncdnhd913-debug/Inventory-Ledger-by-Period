@@ -10,6 +10,10 @@ st.markdown("""
     <style>
     .reportview-container .main .block-container { max-width: 95%; }
     .stDataFrame { border: 1px solid #e6e9ef; border-radius: 5px; }
+    /* Streamlit 테이블 헤더 강제 중앙 정렬 */
+    [data-testid="stTable"] th, [data-testid="stDataFrame"] th { 
+        text-align: center !important; 
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -59,10 +63,10 @@ def style_financial_df(df, diff_cols, text_cols, label_col='품목명'):
     
     num_cols = [c for c in df.columns if df[c].dtype != object and c != label_col]
     
-    # 합계행 강조 함수 (진한 회색 배경 + 검은색 폰트)
+    # 합계행 강조 함수 (배경색 제거, 글자색 기본, 굵게)
     def highlight_total(row):
         if row.get(label_col) == '▶ 합계 (TOTAL)':
-            return ['background-color: #B0BEC5 !important; color: #000000 !important; font-weight: 900 !important;'] * len(row)
+            return ['font-weight: bold !important;'] * len(row)
         return [''] * len(row)
         
     styler = df.style.format("{:,.0f}", subset=num_cols)
