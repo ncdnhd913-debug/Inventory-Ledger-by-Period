@@ -19,7 +19,6 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 1, 2번 수정사항 적용
 st.title("📦 Financial Inventory Variance Analysis")
 st.markdown("기말재고 및 재료비/매출원가 증감 분석을 위한 통합 시스템입니다.")
 
@@ -140,8 +139,6 @@ with st.sidebar:
     X = st.selectbox("기준 월(X)", options=list(range(1, 13)), index=0)
     prev_X = X - 1 if X > 1 else 12
     st.divider()
-    
-    # 3번 수정사항 적용
     st.subheader("📁 1. 원가수불부(ERP10) 파일 업로드")
     st.caption("💡 '원가수불부' 메뉴에서 다운받은 실제원가수불(EXCEL) 자료를 업로드하세요.")
     f_curr_m = st.file_uploader(f"(1) 당월 ({X}월)", type=['csv', 'xlsx'])
@@ -150,7 +147,6 @@ with st.sidebar:
     f_prev_ytd = st.file_uploader(f"(4) 전기 동기 누적 (전기 1월~{X}월)", type=['csv', 'xlsx'])
     f_prev_full = st.file_uploader(f"(5) 전기 전체 (전기 1월~12월)", type=['csv', 'xlsx'])
     st.divider()
-    
     st.subheader("⚙️ 2. 커스텀 매핑 파일 (선택)")
     f_mapping = st.file_uploader("품목 그룹핑 매핑 파일", type=['csv', 'xlsx'], help="품목코드와 분석그룹 열이 있는 파일을 올리시면 일괄 적용됩니다.")
 
@@ -294,10 +290,46 @@ if all(f is not None for f in files):
             s_view3_total = get_totals(s_view3, s_view3.columns[1:], label_col='품목계정그룹')
             st.dataframe(style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum3)
 
-        # 엑셀 다운로드
+        # 엑셀 다운로드 (보고서 양식 맞춤)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            comp_all.to_excel(writer, index=False, sheet_name='종합분석')
+            # 1. 기말재고 총괄 시트
+            export_inv = summary_agg[['품목계정그룹', '전기말_재고', '당월말_재고', '재고_증감']].copy()
+            export_inv = pd.concat([export_inv, get_totals(export_inv, export_inv.columns[1:], label_col='품목계정그룹')], ignore_index=True)
+            export_inv.to_excel(writer, index=False, sheet_name='기말재고_총괄')
+
+            # 2. 매출원가 총괄 시트 (반제품 제외)
+            export_cogs = summary_agg[summary_agg['품목계정그룹'] != '반제품'][['품목계정그룹', '당기누적_판매출고', '전기동기_판매출고', '판매_YoY증감', '당월_판매출고', '전월_판매출고', '판매_MoM증감']].copy()
+            export_cogs.columns = ['품목계정그룹', '당기누적_매출원가', '전기누적_매출원가', '전기대비_차이증감', '당월_매출원가', '전월_매출원가', '전월대비_차이증감']
+            export_cogs = pd.concat([export_cogs, get_totals(export_cogs, export_cogs.columns[1:], label_col='품목계정그룹')], ignore_index=True)
+            export_cogs.to_excel(writer, index=False, sheet_name='매출원가_총괄')
+
+            # 3. 재료비 총괄 시트 (원/부재료)
+            export_mat = summary_agg[summary_agg['품목계정그룹'].isin(['원재료', '부재료'])][['품목계정그룹', '당기누적_생산출고', '전기동기_생산출고', '생산_YoY증감', '당월_생산출고', '전월_생산출고', '생산_MoM증감']].copy()
+            export_mat.columns = ['품목계정그룹', '당기누적_재료비', '전기누적_재료비', '전기대비_차이증감', '당월_재료비', '전월_재료비', '전월대비_차이증감']
+            export_mat = pd.concat([export_mat, get_totals(export_mat, export_mat.columns[1:], label_col='품목계정그룹')], ignore_index=True)
+            export_mat.to_excel(writer, index=False, sheet_name='재료비_총괄')
+
+            # 4. 상세 분석 전체 데이터 시트
+            export_detail = comp_all.copy()
+            # 컬럼명 정리 및 0인 행 제외 로직 (UI와 동일하게)
+            export_detail = export_detail[(export_detail[['전기말_재고', '당월말_재고', '당기누적_판매출고', '전기동기_판매출고', '당월_판매출고', '당기누적_생산출고', '전기동기_생산출고', '당월_생산출고']] != 0).any(axis=1)]
+            
+            export_detail.rename(columns={
+                '판매_YoY증감': '매출원가_전기대비증감', '판매_MoM증감': '매출원가_전월대비증감',
+                '생산_YoY증감': '재료비_전기대비증감', '생산_MoM증감': '재료비_전월대비증감',
+                '당기누적_판매출고': '당기누적_매출원가', '전기동기_판매출고': '전기누적_매출원가', '당월_판매출고': '당월_매출원가', '전월_판매출고': '전월_매출원가',
+                '당기누적_생산출고': '당기누적_재료비', '전기동기_생산출고': '전기누적_재료비', '당월_생산출고': '당월_재료비', '전월_생산출고': '전월_재료비'
+            }, inplace=True)
+            
+            # 원하는 컬럼 순서 지정
+            detail_cols = ['분석그룹', '품목계정그룹', '품목코드', '품목명', '단위', 
+                           '전기말_재고', '당월말_재고', '재고_증감',
+                           '당기누적_매출원가', '전기누적_매출원가', '매출원가_전기대비증감', '당월_매출원가', '전월_매출원가', '매출원가_전월대비증감',
+                           '당기누적_재료비', '전기누적_재료비', '재료비_전기대비증감', '당월_재료비', '전월_재료비', '재료비_전월대비증감']
+            
+            export_detail[detail_cols].to_excel(writer, index=False, sheet_name='품목별_상세분석')
+
         st.download_button("📥 전체 분석 데이터 다운로드", data=output.getvalue(), file_name=f"Inventory_Analysis_{X}M.xlsx")
 else:
     st.info("💡 사이드바의 1번(원가수불부 5개 파일) 항목을 모두 업로드해주세요.")
