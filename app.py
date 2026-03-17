@@ -157,7 +157,7 @@ if all(f is not None for f in files):
     d_curr_m, d_prev_m, d_curr_ytd, d_prev_ytd, d_prev_full = dfs
 
     if all(d is not None for d in dfs):
-        # 품목 마스터 취합
+        # 데이터 누락 방지: 모든 파일에서 품목 마스터 취합
         all_items = pd.concat([d[['품목코드', '품목명', '단위', '품목계정그룹']] for d in dfs]).drop_duplicates('품목코드')
         all_items['분석그룹'] = all_items['품목명'].apply(lambda x: str(x).split('-')[0].strip())
         
@@ -189,17 +189,26 @@ if all(f is not None for f in files):
 
         comp_all = all_items.merge(d_curr_m[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'당월_생산출고', '판매출고_금액':'당월_판매출고', '기말재고_금액':'당월말_재고'})
-        comp_all = comp_all.merge(d_prev_m[['품목코드', '생산출고_금액', '판매출고_금액']], on='품목코드', how='left')\
-                            .rename(columns={'생산출고_금액':'전월_생산출고', '판매출고_금액':'전월_판매출고'})
+        
+        # 전월 파일에서 '기말재고_금액(전월말)'도 가져옴
+        comp_all = comp_all.merge(d_prev_m[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
+                            .rename(columns={'생산출고_금액':'전월_생산출고', '판매출고_금액':'전월_판매출고', '기말재고_금액':'전월말_재고'})
+                            
         comp_all = comp_all.merge(d_curr_ytd[['품목코드', '생산출고_금액', '판매출고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'당기누적_생산출고', '판매출고_금액':'당기누적_판매출고'})
+                            
+        # 전기동기 누적 파일에서 '기말재고_금액(전기동월말)'도 가져옴
         comp_all = comp_all.merge(d_prev_ytd[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'전기동기_생산출고', '판매출고_금액':'전기동기_판매출고', '기말재고_금액':'전기동월말_재고'})
+                            
         comp_all = comp_all.merge(d_prev_full[['품목코드', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'기말재고_금액':'전기말_재고'}).fillna(0)
 
+        # 차이 계산 (전기말, 전기동월말, 전월말 비교 모두 포함)
         comp_all['재고증감_vs전기말'] = comp_all['당월말_재고'] - comp_all['전기말_재고']
         comp_all['재고증감_vs전기동월'] = comp_all['당월말_재고'] - comp_all['전기동월말_재고']
+        comp_all['재고증감_vs전월'] = comp_all['당월말_재고'] - comp_all['전월말_재고']
+        
         comp_all['판매_YoY증감'] = comp_all['당기누적_판매출고'] - comp_all['전기동기_판매출고']
         comp_all['판매_MoM증감'] = comp_all['당월_판매출고'] - comp_all['전월_판매출고']
         comp_all['생산_YoY증감'] = comp_all['당기누적_생산출고'] - comp_all['전기동기_생산출고']
@@ -225,13 +234,15 @@ if all(f is not None for f in files):
             
             tabs = st.tabs(tab_names)
             
+            # 1) 기말재고 차이분석 (전기말, 전기동월말, 전월말 모두 반영)
             with tabs[0]:
-                view1 = group_df[(group_df['전기말_재고'] != 0) | (group_df['전기동월말_재고'] != 0) | (group_df['당월말_재고'] != 0)].copy()
+                view1 = group_df[(group_df['전기말_재고'] != 0) | (group_df['전기동월말_재고'] != 0) | (group_df['전월말_재고'] != 0) | (group_df['당월말_재고'] != 0)].copy()
                 if not view1.empty:
-                    view1 = view1[['분석그룹', '품목코드', '품목명', '전기말_재고', '전기동월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월']]
-                    display_analysis_tab(view1, view1.columns.tolist(), ['재고증감_vs전기말', '재고증감_vs전기동월'], text_cols, "tab_inv")
+                    view1 = view1[['분석그룹', '품목코드', '품목명', '전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월']]
+                    display_analysis_tab(view1, view1.columns.tolist(), ['재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월'], text_cols, "tab_inv")
                 else: st.info("재고 변동 내역이 없습니다.")
 
+            # 2) 매출원가 차이분석
             if target_group != '반제품':
                 with tabs[1]:
                     view2 = group_df[(group_df['당기누적_판매출고'] != 0) | (group_df['전기동기_판매출고'] != 0) | (group_df['당월_판매출고'] != 0) | (group_df['전월_판매출고'] != 0)].copy()
@@ -240,6 +251,7 @@ if all(f is not None for f in files):
                         view2.columns = ['분석그룹', '품목코드', '품목명', '당기누적_매출원가', '전기누적_매출원가', '전기대비 차이증감', '당월_매출원가', '전월_매출원가', '전월대비 차이증감']
                         display_analysis_tab(view2, view2.columns.tolist(), ['전기대비 차이증감', '전월대비 차이증감'], text_cols, "tab_cogs")
 
+            # 3) 재료비 차이분석
             if target_group in ['원재료', '부재료']:
                 with tabs[len(tab_names)-1]:
                     cost_label = "원재료비" if target_group == '원재료' else "부재료비"
@@ -255,7 +267,8 @@ if all(f is not None for f in files):
         st.subheader("📑 계정별 총괄 요약 보고서 (Summary Report)")
         
         summary_agg = comp_all.groupby('품목계정그룹').agg({
-            '전기말_재고': 'sum', '전기동월말_재고': 'sum', '당월말_재고': 'sum', '재고증감_vs전기말': 'sum', '재고증감_vs전기동월': 'sum',
+            '전기말_재고': 'sum', '전기동월말_재고': 'sum', '전월말_재고': 'sum', '당월말_재고': 'sum', 
+            '재고증감_vs전기말': 'sum', '재고증감_vs전기동월': 'sum', '재고증감_vs전월': 'sum',
             '당기누적_판매출고': 'sum', '전기동기_판매출고': 'sum', '판매_YoY증감': 'sum',
             '당월_판매출고': 'sum', '전월_판매출고': 'sum', '판매_MoM증감': 'sum',
             '당기누적_생산출고': 'sum', '전기동기_생산출고': 'sum', '생산_YoY증감': 'sum',
@@ -268,11 +281,11 @@ if all(f is not None for f in files):
         summary_tabs = st.tabs(["🏛️ 기말재고 총괄", "💰 매출원가 총괄", "🛠️ 재료비 총괄"])
 
         with summary_tabs[0]:
-            sum_view1 = summary_agg[['품목계정그룹', '전기말_재고', '전기동월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월']]
+            sum_view1 = summary_agg[['품목계정그룹', '전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월']]
             col_cfg_sum1 = get_column_config(sum_view1.columns, text_cols)
-            st.dataframe(style_financial_df(sum_view1, ['재고증감_vs전기말', '재고증감_vs전기동월'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True, column_config=col_cfg_sum1)
+            st.dataframe(style_financial_df(sum_view1, ['재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월'], text_cols, label_col='품목계정그룹'), use_container_width=True, hide_index=True, column_config=col_cfg_sum1)
             sum_view1_total = get_totals(sum_view1, sum_view1.columns[1:], label_col='품목계정그룹')
-            st.dataframe(style_financial_df(sum_view1_total, ['재고증감_vs전기말', '재고증감_vs전기동월'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum1)
+            st.dataframe(style_financial_df(sum_view1_total, ['재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum1)
 
         with summary_tabs[1]:
             s_view2 = summary_agg[summary_agg['품목계정그룹'] != '반제품']\
@@ -292,41 +305,29 @@ if all(f is not None for f in files):
             s_view3_total = get_totals(s_view3, s_view3.columns[1:], label_col='품목계정그룹')
             st.dataframe(style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum3)
 
-        # ==========================================
-        # 엑셀 다운로드 (정렬 로직 완벽 적용)
-        # ==========================================
+        # 엑셀 다운로드 (보고서 양식 맞춤)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # 1. 기말재고 총괄 시트
-            export_inv = summary_agg[['품목계정그룹', '전기말_재고', '전기동월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월']].copy()
+            export_inv = summary_agg[['품목계정그룹', '전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월']].copy()
             export_inv = pd.concat([export_inv, get_totals(export_inv, export_inv.columns[1:], label_col='품목계정그룹')], ignore_index=True)
             export_inv.to_excel(writer, index=False, sheet_name='기말재고_총괄')
 
-            # 2. 매출원가 총괄 시트 (반제품 제외)
             export_cogs = summary_agg[summary_agg['품목계정그룹'] != '반제품'][['품목계정그룹', '당기누적_판매출고', '전기동기_판매출고', '판매_YoY증감', '당월_판매출고', '전월_판매출고', '판매_MoM증감']].copy()
             export_cogs.columns = ['품목계정그룹', '당기누적_매출원가', '전기누적_매출원가', '전기대비_차이증감', '당월_매출원가', '전월_매출원가', '전월대비_차이증감']
             export_cogs = pd.concat([export_cogs, get_totals(export_cogs, export_cogs.columns[1:], label_col='품목계정그룹')], ignore_index=True)
             export_cogs.to_excel(writer, index=False, sheet_name='매출원가_총괄')
 
-            # 3. 재료비 총괄 시트 (원/부재료)
             export_mat = summary_agg[summary_agg['품목계정그룹'].isin(['원재료', '부재료'])][['품목계정그룹', '당기누적_생산출고', '전기동기_생산출고', '생산_YoY증감', '당월_생산출고', '전월_생산출고', '생산_MoM증감']].copy()
             export_mat.columns = ['품목계정그룹', '당기누적_재료비', '전기누적_재료비', '전기대비_차이증감', '당월_재료비', '전월_재료비', '전월대비_차이증감']
             export_mat = pd.concat([export_mat, get_totals(export_mat, export_mat.columns[1:], label_col='품목계정그룹')], ignore_index=True)
             export_mat.to_excel(writer, index=False, sheet_name='재료비_총괄')
 
-            # 4. 상세 분석 전체 데이터 시트 (3단계 다중 정렬 적용)
             export_detail = comp_all.copy()
-            
-            # 정렬을 위한 Categorical 타입 지정 (우선순위: 제품 > 상품 > 반제품 > 원재료 > 부재료)
             export_detail['품목계정그룹'] = pd.Categorical(export_detail['품목계정그룹'], categories=groups, ordered=True)
-            
-            # [핵심] 3단계 정렬 적용 (계정그룹 -> 커스텀 분석그룹 -> 개별 품목코드)
             export_detail = export_detail.sort_values(['품목계정그룹', '분석그룹', '품목코드'])
             
-            # 무의미한 0 데이터 행 제외
-            export_detail = export_detail[(export_detail[['전기말_재고', '전기동월말_재고', '당월말_재고', '당기누적_판매출고', '전기동기_판매출고', '당월_판매출고', '전월_판매출고', '당기누적_생산출고', '전기동기_생산출고', '당월_생산출고', '전월_생산출고']] != 0).any(axis=1)]
+            export_detail = export_detail[(export_detail[['전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '당기누적_판매출고', '전기동기_판매출고', '당월_판매출고', '전월_판매출고', '당기누적_생산출고', '전기동기_생산출고', '당월_생산출고', '전월_생산출고']] != 0).any(axis=1)]
             
-            # 엑셀 출력용 컬럼명 변경
             export_detail.rename(columns={
                 '판매_YoY증감': '매출원가_전기대비증감', '판매_MoM증감': '매출원가_전월대비증감',
                 '생산_YoY증감': '재료비_전기대비증감', '생산_MoM증감': '재료비_전월대비증감',
@@ -334,9 +335,8 @@ if all(f is not None for f in files):
                 '당기누적_생산출고': '당기누적_재료비', '전기동기_생산출고': '전기누적_재료비', '당월_생산출고': '당월_재료비', '전월_생산출고': '전월_재료비'
             }, inplace=True)
             
-            # 엑셀에 보여질 컬럼 순서 재배치
-            detail_cols = ['품목계정그룹', '분석그룹', '품목코드', '품목명', '단위', 
-                           '전기말_재고', '전기동월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월',
+            detail_cols = ['분석그룹', '품목계정그룹', '품목코드', '품목명', '단위', 
+                           '전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월',
                            '당기누적_매출원가', '전기누적_매출원가', '매출원가_전기대비증감', '당월_매출원가', '전월_매출원가', '매출원가_전월대비증감',
                            '당기누적_재료비', '전기누적_재료비', '재료비_전기대비증감', '당월_재료비', '전월_재료비', '재료비_전월대비증감']
             
