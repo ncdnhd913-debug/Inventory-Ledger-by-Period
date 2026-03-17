@@ -36,14 +36,11 @@ def process_inventory_data(file):
         df = df_raw.iloc[2:].copy()
         df.columns = new_cols
         
-        # 텍스트 컬럼 정제 시, 값이 없는 경우를 확실히 처리
         for col in ['품목계정그룹', '품목코드', '품목명', '단위']:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.strip().replace('nan', '')
                 
         df['품목계정그룹'] = df['품목계정그룹'].replace('제품(OEM)', '제품')
-        
-        # 품목코드가 아예 없는 행(빈 행)만 제외. nan 문자열도 거르기.
         df = df[df['품목코드'] != '']
         
         numeric_cols = [c for c in df.columns if '수량' in c or '금액' in c]
@@ -96,8 +93,6 @@ def get_column_config(df_columns, text_cols):
         if col in text_cols:
             if col == '품목명':
                 config[col] = st.column_config.TextColumn(col, width="large")
-            elif col in ['분석그룹', '품목계정그룹']:
-                config[col] = st.column_config.TextColumn(col, width="medium")
             else:
                 config[col] = st.column_config.TextColumn(col, width="medium")
         else:
@@ -163,7 +158,7 @@ if all(f is not None for f in files):
     d_curr_m, d_prev_m, d_curr_ytd, d_prev_ytd, d_prev_full = dfs
 
     if all(d is not None for d in dfs):
-        # [핵심 수정] 모든 파일의 모든 품목을 누락 없이 취합 (Outer Join 효과 보장)
+        # 품목 마스터 취합
         all_items_list = []
         for d in dfs:
             if d is not None and not d.empty:
@@ -173,7 +168,6 @@ if all(f is not None for f in files):
         
         all_items = pd.concat(all_items_list).drop_duplicates('품목코드')
         
-        # 결측된 텍스트 정보 빈칸 처리
         for col in ['품목명', '단위', '품목계정그룹']:
             if col not in all_items.columns:
                 all_items[col] = ""
@@ -208,21 +202,52 @@ if all(f is not None for f in files):
                     all_items[['품목계정그룹', '품목코드', '품목명', '분석그룹']].to_excel(writer, index=False)
                 st.download_button("📥 매핑 파일 저장(다운로드)", data=out_map.getvalue(), file_name="Item_Mapping.xlsx")
 
-        # 병합 과정 - how='left' 를 쓰되 기준이 되는 all_items가 완벽해야 함
-        comp_all = all_items.merge(d_curr_m[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
-                            .rename(columns={'생산출고_금액':'당월_생산출고', '판매출고_금액':'당월_판매출고', '기말재고_금액':'당월말_재고'})
-        comp_all = comp_all.merge(d_prev_m[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
-                            .rename(columns={'생산출고_금액':'전월_생산출고', '판매출고_금액':'전월_판매출고', '기말재고_금액':'전월말_재고'})
-        comp_all = comp_all.merge(d_curr_ytd[['품목코드', '생산출고_금액', '판매출고_금액']], on='품목코드', how='left')\
-                            .rename(columns={'생산출고_금액':'당기누적_생산출고', '판매출고_금액':'당기누적_판매출고'})
-        comp_all = comp_all.merge(d_prev_ytd[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
-                            .rename(columns={'생산출고_금액':'전기동기_생산출고', '판매출고_금액':'전기동기_판매출고', '기말재고_금액':'전기동월말_재고'})
-        comp_all = comp_all.merge(d_prev_full[['품목코드', '기말재고_금액']], on='품목코드', how='left')\
-                            .rename(columns={'기말재고_금액':'전기말_재고'})
-                            
-        # [핵심 수정] 병합 후 발생하는 NaN을 0으로 완벽히 채움 (결측치에 의한 누락 및 연산 오류 방지)
-        comp_all = comp_all.fillna(0)
+        # [핵심 수정] 병합 로직 재검토: 각 파일 중복 제거 및 타입 확인
+        d_curr_m_unique = d_curr_m.drop_duplicates('품목코드') if d_curr_m is not None else pd.DataFrame()
+        d_prev_m_unique = d_prev_m.drop_duplicates('품목코드') if d_prev_m is not None else pd.DataFrame()
+        d_curr_ytd_unique = d_curr_ytd.drop_duplicates('품목코드') if d_curr_ytd is not None else pd.DataFrame()
+        d_prev_ytd_unique = d_prev_ytd.drop_duplicates('품목코드') if d_prev_ytd is not None else pd.DataFrame()
+        d_prev_full_unique = d_prev_full.drop_duplicates('품목코드') if d_prev_full is not None else pd.DataFrame()
 
+        comp_all = all_items.copy()
+        
+        # 각 파일별 매칭. 존재하는 컬럼만 안전하게 조인
+        if not d_curr_m_unique.empty:
+            cols_to_use = [c for c in ['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액'] if c in d_curr_m_unique.columns]
+            comp_all = comp_all.merge(d_curr_m_unique[cols_to_use], on='품목코드', how='left')\
+                                .rename(columns={'생산출고_금액':'당월_생산출고', '판매출고_금액':'당월_판매출고', '기말재고_금액':'당월말_재고'})
+        
+        if not d_prev_m_unique.empty:
+            cols_to_use = [c for c in ['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액'] if c in d_prev_m_unique.columns]
+            comp_all = comp_all.merge(d_prev_m_unique[cols_to_use], on='품목코드', how='left')\
+                                .rename(columns={'생산출고_금액':'전월_생산출고', '판매출고_금액':'전월_판매출고', '기말재고_금액':'전월말_재고'})
+                                
+        if not d_curr_ytd_unique.empty:
+            cols_to_use = [c for c in ['품목코드', '생산출고_금액', '판매출고_금액'] if c in d_curr_ytd_unique.columns]
+            comp_all = comp_all.merge(d_curr_ytd_unique[cols_to_use], on='품목코드', how='left')\
+                                .rename(columns={'생산출고_금액':'당기누적_생산출고', '판매출고_금액':'당기누적_판매출고'})
+                                
+        if not d_prev_ytd_unique.empty:
+            cols_to_use = [c for c in ['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액'] if c in d_prev_ytd_unique.columns]
+            comp_all = comp_all.merge(d_prev_ytd_unique[cols_to_use], on='품목코드', how='left')\
+                                .rename(columns={'생산출고_금액':'전기동기_생산출고', '판매출고_금액':'전기동기_판매출고', '기말재고_금액':'전기동월말_재고'})
+                                
+        if not d_prev_full_unique.empty:
+            cols_to_use = [c for c in ['품목코드', '기말재고_금액'] if c in d_prev_full_unique.columns]
+            comp_all = comp_all.merge(d_prev_full_unique[cols_to_use], on='품목코드', how='left')\
+                                .rename(columns={'기말재고_금액':'전기말_재고'})
+
+        # 결측치를 0으로 채워 연산 누락 방지
+        comp_all = comp_all.fillna(0)
+        
+        # 특정 파일에 해당 컬럼이 아예 없었을 경우를 대비한 안전 장치
+        expected_num_cols = ['당월_생산출고', '당월_판매출고', '당월말_재고', '전월_생산출고', '전월_판매출고', '전월말_재고', 
+                             '당기누적_생산출고', '당기누적_판매출고', '전기동기_생산출고', '전기동기_판매출고', '전기동월말_재고', '전기말_재고']
+        for col in expected_num_cols:
+            if col not in comp_all.columns:
+                comp_all[col] = 0
+
+        # 차이 계산
         comp_all['재고증감_vs전기말'] = comp_all['당월말_재고'] - comp_all['전기말_재고']
         comp_all['재고증감_vs전기동월'] = comp_all['당월말_재고'] - comp_all['전기동월말_재고']
         comp_all['재고증감_vs전월'] = comp_all['당월말_재고'] - comp_all['전월말_재고']
@@ -320,7 +345,7 @@ if all(f is not None for f in files):
             s_view3_total = get_totals(s_view3, s_view3.columns[1:], label_col='품목계정그룹')
             st.dataframe(style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum3)
 
-        # 엑셀 다운로드
+        # 엑셀 다운로드 (보고서 양식 맞춤)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             export_inv = summary_agg[['품목계정그룹', '전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월']].copy()
