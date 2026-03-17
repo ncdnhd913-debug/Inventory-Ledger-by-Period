@@ -35,11 +35,17 @@ def process_inventory_data(file):
             new_cols.append(col_name)
         df = df_raw.iloc[2:].copy()
         df.columns = new_cols
+        
+        # 텍스트 컬럼 정제 시, 값이 없는 경우를 확실히 처리
         for col in ['품목계정그룹', '품목코드', '품목명', '단위']:
             if col in df.columns:
-                df[col] = df[col].astype(str).str.strip()
+                df[col] = df[col].astype(str).str.strip().replace('nan', '')
+                
         df['품목계정그룹'] = df['품목계정그룹'].replace('제품(OEM)', '제품')
-        df = df[df['품목코드'] != 'nan']
+        
+        # 품목코드가 아예 없는 행(빈 행)만 제외. nan 문자열도 거르기.
+        df = df[df['품목코드'] != '']
+        
         numeric_cols = [c for c in df.columns if '수량' in c or '금액' in c]
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -83,22 +89,22 @@ def style_financial_df(df, diff_cols, text_cols, label_col='품목명', is_total
                             subset=existing_diff_cols)
     return styler
 
-# 공통 Column Config 생성기 (열 너비 강제 통일을 위해)
+# 공통 Column Config 생성기
 def get_column_config(df_columns, text_cols):
     config = {}
     for col in df_columns:
         if col in text_cols:
             if col == '품목명':
-                config[col] = st.column_config.TextColumn(col, width="large") # 품목명은 넓게
+                config[col] = st.column_config.TextColumn(col, width="large")
             elif col in ['분석그룹', '품목계정그룹']:
                 config[col] = st.column_config.TextColumn(col, width="medium")
             else:
                 config[col] = st.column_config.TextColumn(col, width="medium")
         else:
-             config[col] = st.column_config.NumberColumn(col, width="medium") # 숫자는 중간 너비
+             config[col] = st.column_config.NumberColumn(col, width="medium")
     return config
 
-# 2-Step (그룹 -> 상세) 분석 렌더링 함수
+# 2-Step 분석 렌더링 함수
 def display_analysis_tab(df, target_cols, diff_cols, text_cols, tab_id):
     temp_df = df[target_cols].copy()
     num_cols = [c for c in temp_df.columns if temp_df[c].dtype != object and c != '분석그룹']
@@ -157,8 +163,23 @@ if all(f is not None for f in files):
     d_curr_m, d_prev_m, d_curr_ytd, d_prev_ytd, d_prev_full = dfs
 
     if all(d is not None for d in dfs):
-        # 데이터 누락 방지: 모든 파일에서 품목 마스터 취합
-        all_items = pd.concat([d[['품목코드', '품목명', '단위', '품목계정그룹']] for d in dfs]).drop_duplicates('품목코드')
+        # [핵심 수정] 모든 파일의 모든 품목을 누락 없이 취합 (Outer Join 효과 보장)
+        all_items_list = []
+        for d in dfs:
+            if d is not None and not d.empty:
+                cols = [c for c in ['품목코드', '품목명', '단위', '품목계정그룹'] if c in d.columns]
+                if '품목코드' in cols:
+                    all_items_list.append(d[cols])
+        
+        all_items = pd.concat(all_items_list).drop_duplicates('품목코드')
+        
+        # 결측된 텍스트 정보 빈칸 처리
+        for col in ['품목명', '단위', '품목계정그룹']:
+            if col not in all_items.columns:
+                all_items[col] = ""
+            else:
+                all_items[col] = all_items[col].fillna("")
+
         all_items['분석그룹'] = all_items['품목명'].apply(lambda x: str(x).split('-')[0].strip())
         
         if f_mapping is not None:
@@ -187,24 +208,21 @@ if all(f is not None for f in files):
                     all_items[['품목계정그룹', '품목코드', '품목명', '분석그룹']].to_excel(writer, index=False)
                 st.download_button("📥 매핑 파일 저장(다운로드)", data=out_map.getvalue(), file_name="Item_Mapping.xlsx")
 
+        # 병합 과정 - how='left' 를 쓰되 기준이 되는 all_items가 완벽해야 함
         comp_all = all_items.merge(d_curr_m[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'당월_생산출고', '판매출고_금액':'당월_판매출고', '기말재고_금액':'당월말_재고'})
-        
-        # 전월 파일에서 '기말재고_금액(전월말)'도 가져옴
         comp_all = comp_all.merge(d_prev_m[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'전월_생산출고', '판매출고_금액':'전월_판매출고', '기말재고_금액':'전월말_재고'})
-                            
         comp_all = comp_all.merge(d_curr_ytd[['품목코드', '생산출고_금액', '판매출고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'당기누적_생산출고', '판매출고_금액':'당기누적_판매출고'})
-                            
-        # 전기동기 누적 파일에서 '기말재고_금액(전기동월말)'도 가져옴
         comp_all = comp_all.merge(d_prev_ytd[['품목코드', '생산출고_금액', '판매출고_금액', '기말재고_금액']], on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'전기동기_생산출고', '판매출고_금액':'전기동기_판매출고', '기말재고_금액':'전기동월말_재고'})
-                            
         comp_all = comp_all.merge(d_prev_full[['품목코드', '기말재고_금액']], on='품목코드', how='left')\
-                            .rename(columns={'기말재고_금액':'전기말_재고'}).fillna(0)
+                            .rename(columns={'기말재고_금액':'전기말_재고'})
+                            
+        # [핵심 수정] 병합 후 발생하는 NaN을 0으로 완벽히 채움 (결측치에 의한 누락 및 연산 오류 방지)
+        comp_all = comp_all.fillna(0)
 
-        # 차이 계산 (전기말, 전기동월말, 전월말 비교 모두 포함)
         comp_all['재고증감_vs전기말'] = comp_all['당월말_재고'] - comp_all['전기말_재고']
         comp_all['재고증감_vs전기동월'] = comp_all['당월말_재고'] - comp_all['전기동월말_재고']
         comp_all['재고증감_vs전월'] = comp_all['당월말_재고'] - comp_all['전월말_재고']
@@ -234,7 +252,6 @@ if all(f is not None for f in files):
             
             tabs = st.tabs(tab_names)
             
-            # 1) 기말재고 차이분석 (전기말, 전기동월말, 전월말 모두 반영)
             with tabs[0]:
                 view1 = group_df[(group_df['전기말_재고'] != 0) | (group_df['전기동월말_재고'] != 0) | (group_df['전월말_재고'] != 0) | (group_df['당월말_재고'] != 0)].copy()
                 if not view1.empty:
@@ -242,7 +259,6 @@ if all(f is not None for f in files):
                     display_analysis_tab(view1, view1.columns.tolist(), ['재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월'], text_cols, "tab_inv")
                 else: st.info("재고 변동 내역이 없습니다.")
 
-            # 2) 매출원가 차이분석
             if target_group != '반제품':
                 with tabs[1]:
                     view2 = group_df[(group_df['당기누적_판매출고'] != 0) | (group_df['전기동기_판매출고'] != 0) | (group_df['당월_판매출고'] != 0) | (group_df['전월_판매출고'] != 0)].copy()
@@ -251,7 +267,6 @@ if all(f is not None for f in files):
                         view2.columns = ['분석그룹', '품목코드', '품목명', '당기누적_매출원가', '전기누적_매출원가', '전기대비 차이증감', '당월_매출원가', '전월_매출원가', '전월대비 차이증감']
                         display_analysis_tab(view2, view2.columns.tolist(), ['전기대비 차이증감', '전월대비 차이증감'], text_cols, "tab_cogs")
 
-            # 3) 재료비 차이분석
             if target_group in ['원재료', '부재료']:
                 with tabs[len(tab_names)-1]:
                     cost_label = "원재료비" if target_group == '원재료' else "부재료비"
@@ -305,7 +320,7 @@ if all(f is not None for f in files):
             s_view3_total = get_totals(s_view3, s_view3.columns[1:], label_col='품목계정그룹')
             st.dataframe(style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum3)
 
-        # 엑셀 다운로드 (보고서 양식 맞춤)
+        # 엑셀 다운로드
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             export_inv = summary_agg[['품목계정그룹', '전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월']].copy()
