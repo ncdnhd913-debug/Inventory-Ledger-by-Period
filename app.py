@@ -22,7 +22,7 @@ st.markdown("""
 st.title("📦 Financial Inventory Variance Analysis")
 st.markdown("기말재고 및 재료비/매출원가 증감 분석을 위한 통합 시스템입니다.")
 
-# 1. 데이터 전처리 함수 (기말재고 금액 유연한 매핑 추가)
+# 1. 데이터 전처리 함수
 def process_inventory_data(file):
     if file is None: return None
     try:
@@ -62,8 +62,14 @@ def process_inventory_data(file):
 # 합계 행 분리 반환 함수
 def get_totals(df, numeric_cols, label_col='품목명'):
     if df.empty: return pd.DataFrame()
-    totals = df[numeric_cols].sum()
-    total_data = {col: totals[col] for col in numeric_cols}
+    
+    # numeric_cols가 실제 df의 열인지 확인하여 필터링
+    valid_numeric_cols = [col for col in numeric_cols if col in df.columns]
+    
+    # 합계 계산 시 숫자형 데이터만 처리하도록 보완
+    totals = df[valid_numeric_cols].apply(pd.to_numeric, errors='coerce').fillna(0).sum()
+    
+    total_data = {col: totals[col] for col in valid_numeric_cols}
     total_data[label_col] = '▶ 합계 (TOTAL)'
     for col in df.columns:
         if col not in total_data:
@@ -75,8 +81,10 @@ def get_totals(df, numeric_cols, label_col='품목명'):
 def style_financial_df(df, diff_cols, text_cols, label_col='품목명', is_total=False):
     if df.empty: return df
     
-    num_cols = [c for c in df.columns if df[c].dtype != object and c != label_col]
-    styler = df.style.format("{:,.0f}", subset=num_cols)
+    num_cols = [c for c in df.columns if c not in text_cols and c != label_col]
+    
+    # [오류 해결] 람다식을 사용하여 안전하게 포맷팅 (문자열 등 에러 방지)
+    styler = df.style.format(lambda x: "{:,.0f}".format(x) if isinstance(x, (int, float)) else str(x), subset=num_cols)
     
     existing_text = [c for c in text_cols if c in df.columns]
     if existing_text:
@@ -112,10 +120,13 @@ def get_column_config(df_columns, text_cols):
 # 2-Step 분석 렌더링 함수
 def display_analysis_tab(df, target_cols, diff_cols, text_cols, tab_id):
     temp_df = df[target_cols].copy()
-    num_cols = [c for c in temp_df.columns if temp_df[c].dtype != object and c != '분석그룹']
+    num_cols = [c for c in temp_df.columns if c not in text_cols and c != '분석그룹']
     
     st.markdown("#### 1️⃣ 품목 그룹별 차이 요약")
     st.caption("💡 '커스텀 그룹핑' 설정에 따라 묶인 그룹 단위의 원가/재고 변동입니다.")
+    
+    # Groupby 시 숫자형 컬럼 명시적 형변환 후 합산
+    temp_df[num_cols] = temp_df[num_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
     grp_summary = temp_df.groupby('분석그룹')[num_cols].sum().reset_index()
     if diff_cols: grp_summary = grp_summary.sort_values(diff_cols[0], ascending=False)
     
@@ -178,7 +189,6 @@ if all(f is not None for f in files):
         
         all_items = pd.concat(all_items_list).drop_duplicates('품목코드')
         
-        # 결측된 텍스트 정보 빈칸 처리
         for col in ['품목명', '단위', '품목계정그룹']:
             if col not in all_items.columns:
                 all_items[col] = ""
@@ -213,12 +223,13 @@ if all(f is not None for f in files):
                     all_items[['품목계정그룹', '품목코드', '품목명', '분석그룹']].to_excel(writer, index=False)
                 st.download_button("📥 매핑 파일 저장(다운로드)", data=out_map.getvalue(), file_name="Item_Mapping.xlsx")
 
-        # [핵심 수정 2] 각 데이터프레임 병합 전, 중복 처리 방식을 '그룹바이-합계' 로 변경
-        # 중복된 품목코드 행이 있을 경우를 대비하여 모든 숫자 데이터를 더함 (102N00 같은 누락 방지)
         def agg_df(df, cols):
             if df is None or df.empty: return pd.DataFrame(columns=['품목코드'] + cols)
             valid_cols = [c for c in cols if c in df.columns]
             if not valid_cols: return pd.DataFrame(columns=['품목코드'] + cols)
+            
+            # 여기서 확실하게 숫자형으로 변환 후 합산
+            df[valid_cols] = df[valid_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
             return df.groupby('품목코드')[valid_cols].sum().reset_index()
 
         d_curr_m_agg = agg_df(d_curr_m, ['생산출고_금액', '판매출고_금액', '기말재고_금액'])
@@ -229,7 +240,6 @@ if all(f is not None for f in files):
 
         comp_all = all_items.copy()
         
-        # 합산된 데이터로 병합 수행
         comp_all = comp_all.merge(d_curr_m_agg, on='품목코드', how='left')\
                             .rename(columns={'생산출고_금액':'당월_생산출고', '판매출고_금액':'당월_판매출고', '기말재고_금액':'당월말_재고'})
                             
@@ -274,7 +284,7 @@ if all(f is not None for f in files):
         target_group = st.session_state.current_group
         group_df = comp_all[comp_all['품목계정그룹'] == target_group]
         
-        text_cols = ['품목코드', '품목명', '단위', '품목계정그룹']
+        text_cols = ['품목코드', '품목명', '단위', '품목계정그룹', '분석그룹']
 
         if not group_df.empty:
             tab_names = ["🏛️ 기말재고 차이분석"]
@@ -312,6 +322,13 @@ if all(f is not None for f in files):
         st.divider()
         st.subheader("📑 계정별 총괄 요약 보고서 (Summary Report)")
         
+        # 합계 전 숫자 변환 보강
+        for col in ['전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월',
+                    '당기누적_판매출고', '전기동기_판매출고', '판매_YoY증감', '당월_판매출고', '전월_판매출고', '판매_MoM증감',
+                    '당기누적_생산출고', '전기동기_생산출고', '생산_YoY증감', '당월_생산출고', '전월_생산출고', '생산_MoM증감']:
+            if col in comp_all.columns:
+                comp_all[col] = pd.to_numeric(comp_all[col], errors='coerce').fillna(0)
+
         summary_agg = comp_all.groupby('품목계정그룹').agg({
             '전기말_재고': 'sum', '전기동월말_재고': 'sum', '전월말_재고': 'sum', '당월말_재고': 'sum', 
             '재고증감_vs전기말': 'sum', '재고증감_vs전기동월': 'sum', '재고증감_vs전월': 'sum',
@@ -351,7 +368,7 @@ if all(f is not None for f in files):
             s_view3_total = get_totals(s_view3, s_view3.columns[1:], label_col='품목계정그룹')
             st.dataframe(style_financial_df(s_view3_total, ['전기대비 차이증감', '전월대비 차이증감'], text_cols, label_col='품목계정그룹', is_total=True), use_container_width=True, hide_index=True, column_config=col_cfg_sum3)
 
-        # 엑셀 다운로드 (보고서 양식 맞춤)
+        # 엑셀 다운로드
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             export_inv = summary_agg[['품목계정그룹', '전기말_재고', '전기동월말_재고', '전월말_재고', '당월말_재고', '재고증감_vs전기말', '재고증감_vs전기동월', '재고증감_vs전월']].copy()
